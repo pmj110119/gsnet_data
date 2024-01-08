@@ -1,0 +1,7 @@
+numpy
+open3d==0.14.1
+autolab-core==0.0.14
+autolab-perception==0.0.8
+trimesh
+transforms3d
+# graspnetAPI
