@@ -190,14 +190,14 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
     for i in range(v):
         for j in range(a):
             # import ipdb;ipdb.set_trace()
-            # t0 = time.time()
+            t0 = time.time()
             points = points_rotated_all[i,j].unsqueeze(1).unsqueeze(1)
             points_y = points[:,:,:,1]
 
             # inner_mask = final_mask_all[i,j].unsqueeze(-1) & width_mask[i,j]
             # outer_mask = final_mask_all[i,j].unsqueeze(-1) & ~width_mask[i,j]
 
-            # t1 = time.time()
+            t1 = time.time()
             # y_inner_min = torch.where(inner_mask, points_y, inf_1).min(dim=0).values
             # y_inner_max = torch.where(inner_mask, points_y, inf_2).max(dim=0).values
             # half_width[:,:-1] = torch.max(abs(y_inner_min), abs(y_inner_max))
@@ -207,7 +207,7 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
             outer_mask_final[i,j] = outer_mask1 & outer_mask2 & outer_mask_all[i,j]
 
             
-            # t2 = time.time()
+            t2 = time.time()
             # check contact points, make sure each finger has same approach distance
             check_outer_nums =  torch.sum(outer_mask_final[i,j], dim=0) == 0
             # check depth, make sure the gripper is not too deep
@@ -215,7 +215,7 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
             # check inner space, make sure the gripper can grasp enough points
             check_inner_nums = torch.sum(inner_mask_all[i,j], dim=0) > 10
 
-            # t3 = time.time()
+            t3 = time.time()
 
             check_mask[:,:-1] = check_outer_nums & check_too_depth & check_inner_nums
             # check_mask_all[i,j] = check_mask[:,:-1]
@@ -229,9 +229,9 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
 
             width_for_score[i,j] = width_tensor[idx]
 
-            # t4 = time.time()
-            # cost = 1#t4-t0
-            # print((t1-t0)/cost, (t2-t1)/cost, (t3-t2)/cost, (t4-t3)/cost)
+            t4 = time.time()
+            cost = 1#t4-t0
+            print((t1-t0)/cost, (t2-t1)/cost, (t3-t2)/cost, (t4-t3)/cost)
     
     R_all = view_angle_matrix.unsqueeze(2).expand(-1, -1, len(depth_list), -1, -1)
 
