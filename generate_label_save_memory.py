@@ -76,9 +76,6 @@ fc_list = torch.Tensor([1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]).to(de
 # depth_list.reverse()
 
 
-inner_mask_all = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
-outer_mask_all = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
-outer_mask_final = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
 
 width_mask = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
 depth_mask = torch.zeros((v, a, 10000, len(depth_list)), dtype=bool).to(device)
@@ -90,10 +87,8 @@ grippers = torch.zeros((v, a, len(depth_list), 2, 3)).to(device)
 
 
 width_list = [0.01 * x for x in range(1, 16, 1)]
-width_tensor = torch.Tensor(width_list+[width_list[-1]]).to(device)
-
 check_mask_all = torch.zeros((v, a, len(depth_list), len(width_list)), dtype=bool).to(device)
-half_width = torch.zeros((v, a, len(depth_list), len(width_list)+1), dtype=torch.float32).to(device)
+half_width = torch.zeros((len(depth_list), len(width_list)+1), dtype=torch.float32).to(device)
 check_mask = torch.ones((len(depth_list), len(width_list)+1), dtype=torch.bool).to(device).long()
 
 
@@ -141,7 +136,7 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
 
     points_centered = pcd - point       # 10000x3
 
-    t0 = time.time()
+    
     points_centered_expanded = points_centered.unsqueeze(0).unsqueeze(0).expand(v, a, -1, -1)
     points_rotated_all = torch.matmul(view_angle_matrix.transpose(-1, -2), points_centered_expanded.transpose(-1, -2))
     points_rotated_all = points_rotated_all.transpose(-1,-2)
@@ -162,7 +157,7 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
         width_mask[:,:,:,:,i] = mask.unsqueeze(3)
 
 
-    
+
     check_mask_all[...] = 0
     half_width[...] = 0
     check_mask[...] = 1
@@ -173,66 +168,46 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
     width_for_score[...] = 0
 
     
-    
-
-    inf_1 = torch.tensor(float('inf')).to(device)
-    inf_2 = torch.tensor(-float('inf')).to(device)
-
-    inner_mask_all[...] = final_mask_all.unsqueeze(-1) & width_mask
-    outer_mask_all[...] = final_mask_all.unsqueeze(-1) & ~width_mask
-
-    points_y = points_rotated_all[:,:,:,1].unsqueeze(-1).unsqueeze(-1)
-    y_inner_min = torch.where(inner_mask_all, points_y, inf_1).min(dim=2).values
-    y_inner_max = torch.where(inner_mask_all, points_y, inf_2).max(dim=2).values
-    half_width[:,:,:,:-1] = torch.max(abs(y_inner_min), abs(y_inner_max))
-
-
+    width_tensor = torch.Tensor(width_list+[width_list[-1]]).to(device)
     for i in range(v):
         for j in range(a):
-            # import ipdb;ipdb.set_trace()
-            # t0 = time.time()
+            
             points = points_rotated_all[i,j].unsqueeze(1).unsqueeze(1)
             points_y = points[:,:,:,1]
 
-            # inner_mask = final_mask_all[i,j].unsqueeze(-1) & width_mask[i,j]
-            # outer_mask = final_mask_all[i,j].unsqueeze(-1) & ~width_mask[i,j]
-
-            # t1 = time.time()
-            # y_inner_min = torch.where(inner_mask, points_y, inf_1).min(dim=0).values
-            # y_inner_max = torch.where(inner_mask, points_y, inf_2).max(dim=0).values
-            # half_width[:,:-1] = torch.max(abs(y_inner_min), abs(y_inner_max))
-
-            outer_mask1 = (points_y >= -(half_width[i,j,:,:-1] + collision_thresh))
-            outer_mask2 = (points_y <= (half_width[i,j,:,:-1] + collision_thresh))
-            outer_mask_final[i,j] = outer_mask1 & outer_mask2 & outer_mask_all[i,j]
+            inner_mask = final_mask_all[i,j].unsqueeze(-1) & width_mask[i,j]
+            outer_mask = final_mask_all[i,j].unsqueeze(-1) & ~width_mask[i,j]
 
             
-            # t2 = time.time()
-            # check contact points, make sure each finger has same approach distance
-            check_outer_nums =  torch.sum(outer_mask_final[i,j], dim=0) == 0
-            # check depth, make sure the gripper is not too deep
-            check_too_depth =  torch.sum(inner_mask_all[i,j] & (points[:,:,:,0] < -depth_base), dim=0)  == 0
-            # check inner space, make sure the gripper can grasp enough points
-            check_inner_nums = torch.sum(inner_mask_all[i,j], dim=0) > 10
+            y_inner_min = torch.where(inner_mask, points_y, torch.tensor(float('inf'))).min(dim=0).values
+            y_inner_max = torch.where(inner_mask, points_y, torch.tensor(-float('inf'))).max(dim=0).values
+            half_width[:,:-1] = torch.max(abs(y_inner_min), abs(y_inner_max))
 
-            # t3 = time.time()
+            outer_mask1 = (points_y >= -(half_width[:,:-1] + collision_thresh))
+            outer_mask2 = (points_y <= (half_width[:,:-1] + collision_thresh))
+            outer_mask_final = outer_mask1 & outer_mask2 & outer_mask
+
+            
+            # check contact points, make sure each finger has same approach distance
+            check_outer_nums =  torch.sum(outer_mask_final, dim=0) == 0
+            # check depth, make sure the gripper is not too deep
+            check_too_depth =  torch.sum(inner_mask & (points[:,:,:,0] < -depth_base), dim=0)  == 0
+            # check inner space, make sure the gripper can grasp enough points
+            check_inner_nums = torch.sum(inner_mask, dim=0) > 10
 
             check_mask[:,:-1] = check_outer_nums & check_too_depth & check_inner_nums
-            # check_mask_all[i,j] = check_mask[:,:-1]
+            check_mask_all[i,j] = check_mask[:,:-1]
 
 
             idx = torch.argmax(check_mask, dim=1)
 
             curr_offset[i,j,:,0] =  angles[j]
-            curr_offset[i,j,:,2:3] = torch.gather(half_width[i,j]*2, 1, idx.unsqueeze(1))
+            curr_offset[i,j,:,2:3] = torch.gather(half_width*2, 1, idx.unsqueeze(1))
             curr_collision[i,j] = idx==len(width_list)
 
             width_for_score[i,j] = width_tensor[idx]
 
-            # t4 = time.time()
-            # cost = 1#t4-t0
-            # print((t1-t0)/cost, (t2-t1)/cost, (t3-t2)/cost, (t4-t3)/cost)
-    
+
     R_all = view_angle_matrix.unsqueeze(2).expand(-1, -1, len(depth_list), -1, -1)
 
     # import ipdb;ipdb.set_trace()
@@ -248,44 +223,40 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
 
     contacts_normals = get_contacts(pcd, pcd_normals, p1=grippers[...,0,:], p2=grippers[...,1,:])
 
+    
+    
+    
 
-
-    # scores = None
     scores = grasp_score_parallel(contacts_normals[0], contacts_normals[1], contacts_normals[2], contacts_normals[3], fc_list) 
     scores = scores.view(v, a, len(depth_list))
 
     # import ipdb;ipdb.set_trace()
 
     if DEBUG:
-        scores_ours = scores.cpu().numpy()
-        # import ipdb;ipdb.set_trace()
-        gsnet_result = np.load('gsnet_result.npz')
-        official_label = gsnet_result['curr_label']
-
+        official_label = np.load('score.npy')
         true_mask = official_label>0
         false_mask = ~true_mask
-        tp = (scores_ours[true_mask]>0).sum()/true_mask.sum()
-        fp = (scores_ours[false_mask]<=0).sum()/false_mask.sum()
+        tp = (scores[true_mask]>0).sum()/true_mask.sum()
+        fp = (scores[false_mask]<=0).sum()/false_mask.sum()
         print('2 Classication: TP:%4f, FP:%4f'%(tp.item(), fp.item()))
-        tp = (scores_ours[true_mask] == official_label[true_mask]).sum()/true_mask.sum()
-        fp = (scores_ours[false_mask] == official_label[false_mask]).sum()/false_mask.sum()
+        tp = (scores[true_mask] == official_label[true_mask]).sum()/true_mask.sum()
+        fp = (scores[false_mask] == official_label[false_mask]).sum()/false_mask.sum()
         print('10 Classication: TP:%4f, FP:%4f'%(tp.item(), fp.item()))
-        diff = scores_ours-official_label
+        diff = scores-official_label
         diff_less_1 = abs(diff)<=0.1
         tp = diff_less_1[true_mask].sum()/true_mask.sum()
         fp = diff_less_1[false_mask].sum()/false_mask.sum()
         print('10 Classication, diff<0.1: TP:%4f, FP:%4f'%(tp.item(), fp.item()))
-        diff = scores_ours-official_label
+        diff = scores-official_label
         diff_less_1 = abs(diff)<=0.2
         tp = diff_less_1[true_mask].sum()/true_mask.sum()
         fp = diff_less_1[false_mask].sum()/false_mask.sum()
         print('10 Classication, diff<0.2: TP:%4f, FP:%4f'%(tp.item(), fp.item()))
-        diff = scores_ours-official_label
+        diff = scores-official_label
         diff_less_1 = abs(diff)<=0.3
         tp = diff_less_1[true_mask].sum()/true_mask.sum()
         fp = diff_less_1[false_mask].sum()/false_mask.sum()
         print('10 Classication, diff<0.3: TP:%4f, FP:%4f'%(tp.item(), fp.item()))
-        # exit()
         
 
 
@@ -320,9 +291,9 @@ def process_obj(obj_name):
     
 
 
-    saved_score = torch.zeros((len(sampled_points), 300, 12 ,4)).to(device)
-    saved_offset = torch.zeros((len(sampled_points), 300, 12 ,4, 3)).to(device)
-    saved_collision = torch.zeros((len(sampled_points), 300, 12 ,4), dtype=bool).to(device)
+    saved_score = np.zeros((len(sampled_points), 300, 12 ,4))
+    saved_offset = np.zeros((len(sampled_points), 300, 12 ,4, 3))
+    saved_collision = np.zeros((len(sampled_points), 300, 12 ,4), dtype=bool)
 
     with torch.no_grad():
         for i in tqdm(sampled_ind, total=len(sampled_ind)):
@@ -331,9 +302,9 @@ def process_obj(obj_name):
                 pcd_points, pcd_normals, 
                 views_matrix, views
             )
-            saved_score[i] = score#.cpu().numpy()
-            saved_offset[i] = offset#.cpu().numpy()
-            saved_collision[i] = collision#.cpu().numpy()
+            saved_score[i] = score.cpu().numpy()
+            saved_offset[i] = offset.cpu().numpy()
+            saved_collision[i] = collision.cpu().numpy()
      
 
     np.savez_compressed(label_path,
@@ -344,7 +315,7 @@ def process_obj(obj_name):
 
 
 if __name__  == "__main__":
-    root = '/home/panmingjie/data_obj'
+    root = '/data/panmingjie/data_obj'
     with open("./filtered_obj_list.txt", 'r') as f:
         model_list = f.read().splitlines()
         model_list = [os.path.join(root, x) for x in model_list]
