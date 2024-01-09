@@ -270,6 +270,8 @@ def process_obj(obj_name):
     label_path = obj_name.replace(".obj", ".npz")
 
     mesh = o3d.io.read_triangle_mesh(obj_name)
+    if 'OmniObject3d' in obj_name:
+        mesh.vertices = o3d.utility.Vector3dVector(np.array(mesh.vertices)/1000.) 
     mesh_size = min(get_boundbox_size(mesh))
     obj_pcd = mesh.sample_points_uniformly(number_of_points=10000, seed=1999)
 
@@ -314,18 +316,36 @@ def process_obj(obj_name):
 
     np.savez_compressed(label_path,
              points=sampled_points.cpu().numpy(),
-             offsets=saved_offset,
-             collision=saved_collision,
-             scores=saved_score)
+             offsets=saved_offset.cpu().numpy(),
+             collision=saved_collision.cpu().numpy(),
+             scores=saved_score.cpu().numpy())
+
+
+
+import argparse
+
+def split_list_into_parts(lst, n):
+    """将列表分为n个部分"""
+    k, m = divmod(len(lst), n)
+    return (lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
 
 
 if __name__  == "__main__":
     root = '/home/panmingjie/data_obj'
     with open("./filtered_obj_list.txt", 'r') as f:
-        model_list = f.read().splitlines()
-        model_list = [os.path.join(root, x) for x in model_list]
-        model_list = model_list[:10]
+        obj_list = f.read().splitlines()
+        obj_list = [os.path.join(root, x) for x in obj_list]
+        obj_list = obj_list
     
-    for idx, obj_name in enumerate(model_list):
-        print('%d/%d %s'%(idx, len(model_list), obj_name))
+
+    # 处理一部分文件
+    parser = argparse.ArgumentParser(description="将文件列表分成8份")
+    parser.add_argument("part_id", type=int, choices=range(0, 8), help="选择要获取的部分(0-7)")
+    args = parser.parse_args()
+    parts = list(split_list_into_parts(obj_list, 8))
+    selected_objs = parts[args.part_id]  
+
+
+    for idx, obj_name in enumerate(selected_objs):
+        print('%d/%d %s'%(idx, len(selected_objs), obj_name))
         process_obj(obj_name)
