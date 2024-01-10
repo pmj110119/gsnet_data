@@ -270,12 +270,14 @@ def process_obj(obj_name):
     label_path = obj_name.replace(".obj", ".npz")
 
     mesh = o3d.io.read_triangle_mesh(obj_name)
-    if 'OmniObject3d' in obj_name:
+    if 'PhoCaL' in obj_name or 'OmniObject3d' in obj_name:
         mesh.vertices = o3d.utility.Vector3dVector(np.array(mesh.vertices)/1000.) 
+
     mesh_size = min(get_boundbox_size(mesh))
     obj_pcd = mesh.sample_points_uniformly(number_of_points=10000, seed=1999)
 
     sample_voxel_size, model_voxel_size, model_num_sample = 0.004, 0.001, 10000
+    # sample_voxel_size = mesh_size/10
 
     normal_radius = mesh_size / 8
     obj_pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=30))
@@ -331,12 +333,11 @@ def split_list_into_parts(lst, n):
 
 
 if __name__  == "__main__":
-    root = '/home/panmingjie/data_obj'
+    root = '/data/panmingjie/OmniObjectPose/data'
     with open("./filtered_obj_list.txt", 'r') as f:
         obj_list = f.read().splitlines()
-        obj_list = [os.path.join(root, x) for x in obj_list]
+        obj_list = [os.path.join(root, x.replace('Simp', 'Aligned')) for x in obj_list]
         obj_list = obj_list
-    
 
     # 处理一部分文件
     parser = argparse.ArgumentParser(description="将文件列表分成8份")
