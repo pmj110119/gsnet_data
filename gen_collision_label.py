@@ -111,7 +111,7 @@ def prase_label_path(obj_meta):
 
 
 def process(depth_file, view_angles):
-    depth = cv2.imread(depth_file, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+    depth_map = cv2.imread(depth_file, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
 
     meta_file = depth_file.replace("depth.exr", "meta.json")
     meta = prase_meta(meta_file)
@@ -120,7 +120,7 @@ def process(depth_file, view_angles):
 
     camera_intrinsic = meta["camera"]["intrinsics"]
     fx, fy, cx, cy = camera_intrinsic["fx"], camera_intrinsic["fy"], camera_intrinsic["cx"], camera_intrinsic["cy"]
-    scene_points = depth2pc(depth[...,0], [fx, fy, cx, cy], scale=16)
+    scene_points = depth2pc(depth_map[...,0], [fx, fy, cx, cy], scale=8)
     scene_points = torch.Tensor(scene_points).cuda()
     grasp_dict = {}
 
@@ -164,7 +164,7 @@ def process(depth_file, view_angles):
     scene_points = torch.cat([scene_points, all_obj_points]).to(torch.float16)
     view_angles = view_angles.to(torch.float16)
 
-    for i, obj_meta in tqdm(enumerate(meta["objects"].values()), desc="Object Loop", leave=True):
+    for i, obj_meta in tqdm(enumerate(meta["objects"].values()), desc="Object Loop", leave=False):
         pose = obj_pose[i]
         obj_points = obj_points_at_scene[i]
         offsets = torch.Tensor(obj_offsets[i]).to(torch.float16).cuda()
@@ -176,8 +176,11 @@ def process(depth_file, view_angles):
         height = 0.02
         depth_base = 0.02
         finger_width = 0.01
+        finger_length = 0.06
         outlier=0.05    
         empty_thresh=10
+
+        approach_dist=0.03
 
 
         ## 仅对物体周围区域做碰撞检测，周围区域 = 最小外接矩形 + outlier
@@ -190,7 +193,7 @@ def process(depth_file, view_angles):
         workspace = scene_points[xlim & ylim & zlim]
         
         target = (workspace[None,:,:] - obj_points[:,None,:])
-        target_view = torch.zeros((obj_points.shape[0], 12, workspace.shape[0], 3), dtype=torch.float16).cuda()
+        targets = torch.zeros((obj_points.shape[0], 12, workspace.shape[0], 3), dtype=torch.float16).cuda()
         
         collision_label = torch.zeros((obj_points.shape[0], 300, 12, 4), dtype=torch.bool).cuda()
         mask1 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
@@ -201,26 +204,34 @@ def process(depth_file, view_angles):
         mask6 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
         mask7 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
 
-        depths = offsets[:,:,:,:,1].unsqueeze(-1)
-        widths = offsets[:,:,:,:,2].unsqueeze(-1)/2 # half_width
+        grasp_depths = offsets[:,:,:,:,1].unsqueeze(-1)
+        grasp_widths = offsets[:,:,:,:,2].unsqueeze(-1)/2 # half_width
 
         
         for v in range(view_angles.shape[0]):
             for d in range(4):
-                grasp_depths = depths[:,v,:,d,:]
-                grasp_widths = widths[:,v,:,d,:]
+                depths = grasp_depths[:,v,:,d,:]
+                widths = grasp_widths[:,v,:,d,:]
                 # 将scene点云转换至gripper坐标系
-                target_view[...] = target[:,None,:,:] @ View_at_scene[v,None,:,:,:]  
-                # compute collision mask
-                mask1[...] = ((-height/2 < target_view[...,2]) & (target_view[...,2]<height/2))
-                mask2[...] = ((-depth_base < target_view[...,0]) & (target_view[...,0]<grasp_depths))
-                mask3[...] = (target_view[...,1]>-(grasp_widths+finger_width))
-                mask4[...] = (target_view[...,1]<-grasp_widths)
-                mask5[...] = (target_view[...,1]<(grasp_widths+finger_width))
-                mask6[...] = (target_view[...,1]>grasp_widths)
-                mask7[...] = ((target_view[...,0]>-(depth_base+finger_width)) & (target_view[...,0]<-depth_base))
+                targets[...] = target[:,None,:,:] @ View_at_scene[v,None,:,:,:]  
+                ## collision detection
+                # height mask
+                mask1[...] = ((-height/2 < targets[...,2]) & (targets[...,2]<height/2))
                 
-
+                # mask2[...] = ((targets[...,0] > -depth_base) & (targets[...,0]<depths))
+                mask2[...] = ((targets[...,0] > depths - finger_length) & (targets[...,0]<depths))
+                # left finger mask
+                mask3[...] = (targets[...,1] > -(widths + finger_width))
+                mask4[...] = (targets[...,1] < -widths)
+                # right finger mask     OK
+                mask5[...] = (targets[...,1] < (widths + finger_width))
+                mask6[...] = (targets[...,1] > widths)
+                # bottom mask with approach
+                mask7[...] = ((targets[...,0] <= depths - finger_length) \
+                              & (targets[...,0] > depths - finger_length - finger_width - approach_dist))
+                # mask7[...] = ((targets[...,0] < -depth_base) \
+                #               & (targets[...,0] > -(depth_base+widths)))
+                
                 left_mask = (mask1 & mask2 & mask3 & mask4)
                 right_mask = (mask1 & mask2 & mask5 & mask6)
                 bottom_mask = (mask1 & mask3 & mask5 & mask7)
@@ -257,7 +268,7 @@ if __name__ == "__main__":
     depthe_files = glob(scenes_root + "/*/*depth.exr", recursive=True)
     depthe_files.sort()
 
-    depthe_files = get_split_files(depthe_files, 5, args.part_id)
+    depthe_files = get_split_files(depthe_files, 8, args.part_id)
 
     view_angles = get_view_angles()
     view_angles = torch.Tensor(view_angles).cuda()
