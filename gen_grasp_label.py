@@ -207,7 +207,7 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
 
     idx = torch.argmax(check_mask_all.to(torch.int32), dim=-1)
 
-    
+    curr_offset[:,:,:, 1] = depth_list
     curr_offset[:,:,:,2:3] = torch.gather(half_width*2, 3, idx.unsqueeze(-1))
     curr_collision = idx==len(width_list)
 
