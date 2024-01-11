@@ -254,10 +254,10 @@ def prase_label_path(obj_meta):
     return label_path
 
 
-def process(task, view_angles):
-    depth_file, meta_file = task
-    
+def process(depth_file, view_angles):
     depth = cv2.imread(depth_file, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+
+    meta_file = depth_file.replace("depth.exr", "meta.json")
     meta = prase_meta(meta_file)
 
     camera_intrinsic = meta["camera"]["intrinsics"]
@@ -277,7 +277,9 @@ def process(task, view_angles):
         translation = obj_meta["translation"]
         rotation_matrix = quaternion_wxyz_to_rotation_matrix(obj_meta["quaternion_wxyz"])
         grasp_label_path = prase_label_path(obj_meta)
+        assert os.path.exists(grasp_label_path), 'File lost: %s'%grasp_label_path
 
+        print(grasp_label_path)
         # object pose at scene-frame
         pose = np.eye(4)
         pose[:3, :3] = rotation_matrix
@@ -309,13 +311,13 @@ def process(task, view_angles):
         obj_points = obj_points_at_scene[i]
         offsets = torch.Tensor(obj_offsets[i]).cuda()
         scores = torch.Tensor(obj_scores[i]).cuda()
-        collision = torch.Tensor(obj_collision[i]).cuda()
+        collision = torch.Tensor(obj_collision[i]).cuda().bool()
         
 
         View_at_scene = pose[:3,:3].unsqueeze(0).unsqueeze(0) @ view_angles
 
 
-        collision_label = torch.zeros((obj_points.shape[0], 300, 12, 4), dtype=torch.bool)
+        collision_label = torch.zeros((obj_points.shape[0], 300, 12, 4), dtype=torch.bool).cuda()
 
         for v in range(view_angles.shape[0]):
             depth = offsets[:,v,:,:,1]
@@ -335,28 +337,37 @@ def process(task, view_angles):
                 obj_points, 
                 width, 
                 depth)
-            
+
+        collision_label = collision_label | collision
         obj_name = obj_meta["meta"]["oid"]
         grasp_dict[obj_name] = collision_label.cpu().numpy().astype(bool)
+
 
     
     collision_maks_path = meta_file.replace("meta.json", "collision_label.npz")
     np.savez(collision_maks_path, **grasp_dict)
 
 
+import argparse
+parser = argparse.ArgumentParser(description="将文件列表分成8份")
+parser.add_argument("part_id", type=int, choices=range(0, 8), help="选择要获取的部分(0-7)")
+args = parser.parse_args()
+def get_split_files(files, part_num, part_id):
+    k, m = divmod(len(files), part_num)
+    parts = [files[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(part_num)]
+    return parts[part_id]
+
+
 if __name__ == "__main__":
     labels_root = "/data/panmingjie/OmniObjectPose"
     scenes_root = "/data/panmingjie/render/v1/1/train/floor"
-    depthes = glob(scenes_root + "/*/*depth.exr", recursive=True)
-    meta_files = [depth.replace("depth.exr", "meta.json") for depth in depthes]
-    depthes.sort()
-    meta_files.sort()
+    depthe_files = glob(scenes_root + "/*/*depth.exr", recursive=True)
+    depthe_files.sort()
+
+    depthe_files = get_split_files(depthe_files, 8, args.part_id)
 
     view_angles = get_view_angles()
     view_angles = torch.Tensor(view_angles).cuda()
-
-
-    tasks = [task for task in zip(depthes, meta_files)]
-    for task in tqdm(tasks, desc="Scene Loop", leave=False): 
-        process(task, view_angles)
+    for depth_file in tqdm(depthe_files, desc="Frame Loop", leave=False): 
+        process(depth_file, view_angles)
     
