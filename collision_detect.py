@@ -1,11 +1,11 @@
 from glob import glob
-import cv2
 import os
-import numpy as np
+import cv2
 import json
+import time
+import numpy as np
 from tqdm import tqdm
 from scipy.spatial.transform import Rotation
-import taichi as ti
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
@@ -69,14 +69,14 @@ def ti_collision(scene:ti.template(), trans:ti.template(), va:ti.template(),
             for v in range(va.shape[0]):
                 for a in range(va.shape[1]):
                     for d in range(collisions.shape[3]):  # Assuming collisions has at least 4 dimensions
-                        if scores[p, v, a, d] > 0.8 or scores[p, v, a, d] < 0:
-                            continue
-                        if collisions[p, v, a, d]:
-                            continue
+                        # if scores[p, v, a, d] > 0.8 or scores[p, v, a, d] < 0:
+                        #     continue
+                        # if collisions[p, v, a, d]:
+                        #     continue
                         R = va[v, a]
-                        R = trans[None][:3,:3] @ R
-                        if angles_m_z(R) > 80:
-                            continue
+                        R = trans[None][:3,:3] @ R  # BUG--> R = trans[None][:,:3,:3] @ R
+                        # if angles_m_z(R) > 80:
+                        #     continue
                         t = transform_single_point(points[p], trans[None])
                         depth = offsets[p, v, a, d, 1]
                         width = offsets[p, v, a, d, 2]
@@ -265,8 +265,8 @@ def prase_meta(meta_file):
 
 def prase_label_path(obj_meta):
     global labels_root 
-    sub_name = obj_meta["meta"]["instance_path"].split("/")[-3]
-    label_path = os.path.join(labels_root, sub_name, "Aligned_m.npz")
+    obj_path = os.path.dirname(obj_meta["meta"]["instance_path"])
+    label_path = os.path.join(labels_root, obj_path, "Simp.npz")
     return label_path
 
 
@@ -296,16 +296,17 @@ def process(task, view_angles):
         translation = obj_meta["translation"]
         rotation_matrix = quaternion_wxyz_to_rotation_matrix(obj_meta["quaternion_wxyz"])
         grasp_label_path = prase_label_path(obj_meta)
-        import ipdb;ipdb.set_trace()
+        grasp_label_path = '/data/panmingjie/OmniObjectPose/data/OmniObject3d-simplified/output/tooth_paste/tooth_paste_041/Scan/Aligned.npz'
         if os.path.exists(grasp_label_path) == False:
-            print(grasp_label_path)
+            print('Lost ', grasp_label_path)
             continue
-        
+        print(grasp_label_path)
         transform = np.eye(4)
         transform[:3, :3] = rotation_matrix
         transform[:3, 3] = translation
 
         sampled_points, offsets, scores, collision = get_model_grasps(grasp_label_path)
+
         n = sampled_points.shape[0]
         trans_field = ti.Matrix.field(4, 4, dtype=ti.f16, shape=())
         trans_field.from_numpy(transform.astype(np.float16))
@@ -321,7 +322,7 @@ def process(task, view_angles):
         score_field.from_numpy(scores.astype(np.float16))
         collision_mask_field.from_numpy(collision.astype(np.int8))
 
-        import ipdb;ipdb.set_trace()
+
         ti_collision(scene_field, trans_field, va_field, sampled_point_field, 
                     offest_field, score_field, collision_mask_field, res_field) 
 
@@ -334,9 +335,9 @@ def process(task, view_angles):
 
 
 if __name__ == "__main__":
-    labels_root = "/home/panmingjie/gsnet_data/data_obj/models_514_obj"
-    root = "/home/panmingjie/gsnet_data/render/v1/1/train/floor"
-    depthes = glob(root + "/*/*depth.exr", recursive=True)
+    labels_root = "/data/panmingjie/"
+    scenes_root = "/data/panmingjie/render/v1/1/train/floor"
+    depthes = glob(scenes_root + "/*/*depth.exr", recursive=True)
     meta_files = [depth.replace("depth.exr", "meta.json") for depth in depthes]
 
     depthes.sort()

@@ -64,150 +64,6 @@ def get_view_angles(V=300, A=12):
 
 
 
-def process_obj(
-        scene_points, transform, view_angles, 
-        sampled_points, offsets, scores, 
-        collision):
-        
-
-        View_at_scene = transform[:3,:3].unsqueeze(0).unsqueeze(0) @ view_angles
-
-
-        obj_points = torch.ones((sampled_points.shape[0], 4)).cuda()
-        obj_points[:,:3] = sampled_points
-        obj_points_at_scene = (transform @ obj_points.T).T[:,:3]
-
-
-        collision_label = torch.zeros((sampled_points.shape[0], 300, 12, 4))
-        for v in range(view_angles.shape[0]):
-            depth = offsets[:,v,:,:,1]
-            width = offsets[:,v,:,:,2]
-            collision_label[:,v,...] = detect_scene_collision_batch(
-                scene_points, 
-                View_at_scene[v], 
-                obj_points_at_scene, 
-                width, 
-                depth)
-            
-        return collision_label
-            
-
-
-
-
-def angles_m_z(R):
-    PI = 3.141592653589793
-
-    # Assuming R is a ti.Matrix and already normalized (since it's a rotation matrix)
-    rotated_x_axis = R[:, 0]  # This is the first column of the rotation matrix
-
-    # Original Z-axis
-    original_z_axis = np.Vector([0, 0, 1])
-
-    # Compute the dot product between the original Z-axis and the rotated X-axis
-    dot_product = rotated_x_axis.dot(original_z_axis)
-
-    # For unit vectors, their magnitudes are 1, so we skip magnitude calculation
-
-    # Compute the cosine of the angle between the two vectors
-    cos_angle = dot_product  # Since both vectors are unit vectors, their magnitudes are 1
-
-    # Compute the angle in radians and then convert to degrees
-    angle_radians = np.acos(np.max(np.min(cos_angle, 1.0), -1.0))  # Clipping for numerical stability
-    angle_degrees = angle_radians * 180.0 / PI  # Converting to degrees
-
-    return angle_degrees
-
-
-
-def detect_scene_collision_batch(scene_points, view_trans, obj_points, grasp_widths, grasp_depths):
-    height = 0.02
-    depth_base = 0.02
-    finger_width = 0.01
-    outlier=0.05    
-    empty_thresh=10
-
-    ## 仅对物体周围区域做碰撞检测，周围区域 = 最小外接矩形 + outlier
-    xmin, xmax = obj_points[:,0].min(), obj_points[:,0].max()
-    ymin, ymax = obj_points[:,1].min(), obj_points[:,1].max()
-    zmin, zmax = obj_points[:,2].min(), obj_points[:,2].max()
-    xlim = ((scene_points[:,0] > xmin-outlier) & (scene_points[:,0] < xmax+outlier))
-    ylim = ((scene_points[:,1] > ymin-outlier) & (scene_points[:,1] < ymax+outlier))
-    zlim = ((scene_points[:,2] > zmin-outlier) & (scene_points[:,2] < zmax+outlier))
-    workspace = scene_points[xlim & ylim & zlim]
-    
-    # 将scene点云转换至gripper坐标系
-    target = (workspace[np.newaxis,:,:] - obj_points[:,np.newaxis,:])
-    target = target[:,np.newaxis,:,:] @ view_trans[np.newaxis,:,:,:]  
-
-    
-    grasp_widths = grasp_widths.unsqueeze(-1)/2 # half_width
-    target = target.unsqueeze(2).expand(-1,-1,4,-1,-1)
-
-    # target:       N_obj x 12 x 4 x N_scene x 3
-    # grasp_depths: N_obj x 12 x 4
-
-
-    # compute collision mask
-    mask1 = ((-height/2 < target[...,2]) & (target[...,2]<height/2))
-    mask2 = ((-depth_base < target[...,0]) & (target[...,0]<grasp_depths.unsqueeze(-1)))
-    mask3 = (target[...,1]>-(grasp_widths+finger_width))
-    mask4 = (target[...,1]<-grasp_widths)
-    mask5 = (target[...,1]<(grasp_widths+finger_width))
-    mask6 = (target[...,1]>grasp_widths)
-    mask7 = ((target[...,0]>-(depth_base+finger_width)) & (target[...,0]<-depth_base))
-    
-    left_mask = (mask1 & mask2 & mask3 & mask4)
-    right_mask = (mask1 & mask2 & mask5 & mask6)
-    bottom_mask = (mask1 & mask3 & mask5 & mask7)
-    inner_mask = (mask1 & mask2 &(~mask4) & (~mask6))
-    collision_mask = torch.any((left_mask | right_mask | bottom_mask), dim=-1)
-    empty_mask = (torch.sum(inner_mask, dim=-1) < empty_thresh)
-    collision_mask = (collision_mask | empty_mask)
-
-    return collision_mask
-
-
-def detect_scene_collision(scene_points, view_trans, obj_points, grasp_widths, grasp_depths):
-    height = 0.02
-    depth_base = 0.02
-    finger_width = 0.01
-    outlier=0.05    
-    empty_thresh=10
-
-    ## 仅对物体周围区域做碰撞检测，周围区域 = 最小外接矩形 + outlier
-    xmin, xmax = obj_points[:,0].min(), obj_points[:,0].max()
-    ymin, ymax = obj_points[:,1].min(), obj_points[:,1].max()
-    zmin, zmax = obj_points[:,2].min(), obj_points[:,2].max()
-    xlim = ((scene_points[:,0] > xmin-outlier) & (scene_points[:,0] < xmax+outlier))
-    ylim = ((scene_points[:,1] > ymin-outlier) & (scene_points[:,1] < ymax+outlier))
-    zlim = ((scene_points[:,2] > zmin-outlier) & (scene_points[:,2] < zmax+outlier))
-    workspace = scene_points[xlim & ylim & zlim]
-    
-    # 将scene点云转换至gripper坐标系
-    target = (workspace[np.newaxis,:,:] - obj_points[:,np.newaxis,:])
-    target = target @ view_trans[None]
-
-    # compute collision mask
-    mask1 = ((-height/2 < target[:,:,2]) & (target[:,:,2]<height/2))
-    mask2 = ((-depth_base < target[:,:,0]) & (target[:,:,0]<grasp_depths[:,np.newaxis]))
-    mask3 = (target[:,:,1]>-(grasp_widths[:,np.newaxis]/2+finger_width))
-    mask4 = (target[:,:,1]<-grasp_widths[:,np.newaxis]/2)
-    mask5 = (target[:,:,1]<(grasp_widths[:,np.newaxis]/2+finger_width))
-    mask6 = (target[:,:,1]>grasp_widths[:,np.newaxis]/2)
-    mask7 = ((target[:,:,0]>-(depth_base+finger_width)) & (target[:,:,0]<-depth_base))
-    
-    left_mask = (mask1 & mask2 & mask3 & mask4)
-    right_mask = (mask1 & mask2 & mask5 & mask6)
-    bottom_mask = (mask1 & mask3 & mask5 & mask7)
-    inner_mask = (mask1 & mask2 &(~mask4) & (~mask6))
-    collision_mask = np.any((left_mask | right_mask | bottom_mask), axis=-1)
-    empty_mask = (np.sum(inner_mask, axis=-1) < empty_thresh)
-    collision_mask = (collision_mask | empty_mask)
-
-    return collision_mask
-
-
 def quaternion_wxyz_to_rotation_matrix(quaternion_wxyz):
     # Create a Rotation object from the quaternion
     r = Rotation.from_quat(quaternion_wxyz[1:]+[quaternion_wxyz[0]])
@@ -259,10 +115,12 @@ def process(depth_file, view_angles):
 
     meta_file = depth_file.replace("depth.exr", "meta.json")
     meta = prase_meta(meta_file)
+    collision_mask_file = depth_file.replace("depth.exr", "collision_label.npz")
+    print(collision_mask_file)
 
     camera_intrinsic = meta["camera"]["intrinsics"]
     fx, fy, cx, cy = camera_intrinsic["fx"], camera_intrinsic["fy"], camera_intrinsic["cx"], camera_intrinsic["cy"]
-    scene_points = depth2pc(depth[...,0], [fx, fy, cx, cy], scale=4)
+    scene_points = depth2pc(depth[...,0], [fx, fy, cx, cy], scale=16)
     scene_points = torch.Tensor(scene_points).cuda()
     grasp_dict = {}
 
@@ -279,20 +137,19 @@ def process(depth_file, view_angles):
         grasp_label_path = prase_label_path(obj_meta)
         assert os.path.exists(grasp_label_path), 'File lost: %s'%grasp_label_path
 
-        print(grasp_label_path)
         # object pose at scene-frame
         pose = np.eye(4)
         pose[:3, :3] = rotation_matrix
         pose[:3, 3] = translation
-        pose = torch.Tensor(pose).cuda()
+        pose = torch.Tensor(pose).to(torch.float16).cuda()
         obj_pose.append(pose)
 
         points, offsets, scores, collision = get_model_grasps(grasp_label_path)
 
         # transform points from object-frame to scene-frame
-        points_homn = torch.ones((points.shape[0], 4)).cuda()
+        points_homn = torch.ones((points.shape[0], 4), dtype=torch.float16).cuda()
         points_homn[:,:3] = torch.Tensor(points)
-        points_at_scene = (pose @ points_homn.T).T[:,:3]
+        points_at_scene = (pose @ points_homn.T).T[:,:3].to(torch.float16)
 
         obj_points_at_scene.append(points_at_scene)
         obj_offsets.append(offsets)
@@ -304,48 +161,84 @@ def process(depth_file, view_angles):
     obj_pose = torch.stack(obj_pose)
 
     all_obj_points = torch.cat(obj_points_at_scene, dim=0)
-    scene_points = torch.cat([scene_points, all_obj_points])
+    scene_points = torch.cat([scene_points, all_obj_points]).to(torch.float16)
+    view_angles = view_angles.to(torch.float16)
 
-    for i, obj_meta in tqdm(enumerate(meta["objects"].values()), desc="Object Loop2", leave=False):
+    for i, obj_meta in tqdm(enumerate(meta["objects"].values()), desc="Object Loop", leave=True):
         pose = obj_pose[i]
         obj_points = obj_points_at_scene[i]
-        offsets = torch.Tensor(obj_offsets[i]).cuda()
-        scores = torch.Tensor(obj_scores[i]).cuda()
-        collision = torch.Tensor(obj_collision[i]).cuda().bool()
-        
+        offsets = torch.Tensor(obj_offsets[i]).to(torch.float16).cuda()
+        scores = torch.Tensor(obj_scores[i]).to(torch.float16).cuda()
+        collision = torch.Tensor(obj_collision[i]).to(torch.bool).cuda()
 
         View_at_scene = pose[:3,:3].unsqueeze(0).unsqueeze(0) @ view_angles
 
+        height = 0.02
+        depth_base = 0.02
+        finger_width = 0.01
+        outlier=0.05    
+        empty_thresh=10
 
+
+        ## 仅对物体周围区域做碰撞检测，周围区域 = 最小外接矩形 + outlier
+        xmin, xmax = obj_points[:,0].min(), obj_points[:,0].max()
+        ymin, ymax = obj_points[:,1].min(), obj_points[:,1].max()
+        zmin, zmax = obj_points[:,2].min(), obj_points[:,2].max()
+        xlim = ((scene_points[:,0] > xmin-outlier) & (scene_points[:,0] < xmax+outlier))
+        ylim = ((scene_points[:,1] > ymin-outlier) & (scene_points[:,1] < ymax+outlier))
+        zlim = ((scene_points[:,2] > zmin-outlier) & (scene_points[:,2] < zmax+outlier))
+        workspace = scene_points[xlim & ylim & zlim]
+        
+        target = (workspace[None,:,:] - obj_points[:,None,:])
+        target_view = torch.zeros((obj_points.shape[0], 12, workspace.shape[0], 3), dtype=torch.float16).cuda()
+        
         collision_label = torch.zeros((obj_points.shape[0], 300, 12, 4), dtype=torch.bool).cuda()
+        mask1 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
+        mask2 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
+        mask3 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
+        mask4 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
+        mask5 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
+        mask6 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
+        mask7 = torch.zeros((obj_points.shape[0], 12,  workspace.shape[0]), dtype=torch.bool).cuda()
 
+        depths = offsets[:,:,:,:,1].unsqueeze(-1)
+        widths = offsets[:,:,:,:,2].unsqueeze(-1)/2 # half_width
+
+        
         for v in range(view_angles.shape[0]):
-            depth = offsets[:,v,:,:,1]
-            width = offsets[:,v,:,:,2]
-
-            if DEBUG:
-                import ipdb;ipdb.set_trace()
-                np.savetxt('scene.txt', scene_points.cpu().numpy())
-                np.savetxt('obj.txt', obj_points.cpu().numpy())
-                np.savetxt('all_obj_points.txt', all_obj_points.cpu().numpy())
+            for d in range(4):
+                grasp_depths = depths[:,v,:,d,:]
+                grasp_widths = widths[:,v,:,d,:]
+                # 将scene点云转换至gripper坐标系
+                target_view[...] = target[:,None,:,:] @ View_at_scene[v,None,:,:,:]  
+                # compute collision mask
+                mask1[...] = ((-height/2 < target_view[...,2]) & (target_view[...,2]<height/2))
+                mask2[...] = ((-depth_base < target_view[...,0]) & (target_view[...,0]<grasp_depths))
+                mask3[...] = (target_view[...,1]>-(grasp_widths+finger_width))
+                mask4[...] = (target_view[...,1]<-grasp_widths)
+                mask5[...] = (target_view[...,1]<(grasp_widths+finger_width))
+                mask6[...] = (target_view[...,1]>grasp_widths)
+                mask7[...] = ((target_view[...,0]>-(depth_base+finger_width)) & (target_view[...,0]<-depth_base))
                 
 
-            
-            collision_label[:,v,...] = detect_scene_collision_batch(
-                scene_points, 
-                View_at_scene[v], 
-                obj_points, 
-                width, 
-                depth)
+                left_mask = (mask1 & mask2 & mask3 & mask4)
+                right_mask = (mask1 & mask2 & mask5 & mask6)
+                bottom_mask = (mask1 & mask3 & mask5 & mask7)
+                inner_mask = (mask1 & mask2 &(~mask4) & (~mask6)) 
+         
+                collision_mask = torch.any((left_mask | right_mask | bottom_mask), dim=-1)
+                empty_mask = (torch.sum(inner_mask, dim=-1) < empty_thresh)
+                collision_label[:,v,:,d] = (collision_mask | empty_mask)
+
 
         collision_label = collision_label | collision
         obj_name = obj_meta["meta"]["oid"]
         grasp_dict[obj_name] = collision_label.cpu().numpy().astype(bool)
 
 
+                
     
-    collision_maks_path = meta_file.replace("meta.json", "collision_label.npz")
-    np.savez(collision_maks_path, **grasp_dict)
+    np.savez(collision_mask_file, **grasp_dict)
 
 
 import argparse
@@ -364,10 +257,12 @@ if __name__ == "__main__":
     depthe_files = glob(scenes_root + "/*/*depth.exr", recursive=True)
     depthe_files.sort()
 
-    depthe_files = get_split_files(depthe_files, 8, args.part_id)
+    depthe_files = get_split_files(depthe_files, 5, args.part_id)
 
     view_angles = get_view_angles()
     view_angles = torch.Tensor(view_angles).cuda()
-    for depth_file in tqdm(depthe_files, desc="Frame Loop", leave=False): 
-        process(depth_file, view_angles)
+
+    with torch.no_grad():
+        for depth_file in tqdm(depthe_files, desc="Frame Loop", leave=False): 
+            process(depth_file, view_angles)
     

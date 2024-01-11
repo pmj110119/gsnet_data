@@ -76,11 +76,11 @@ fc_list = torch.Tensor([1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]).to(de
 # depth_list.reverse()
 
 
-inner_mask_all = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
-outer_mask_all = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
-outer_mask_final = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
+inner_mask_all = torch.zeros((v,a,10000,4,15), dtype=bool).to(device)
+outer_mask_all = torch.zeros((v,a,10000,4,15), dtype=bool).to(device)
+outer_mask_final = torch.zeros((v,a,10000,4,15), dtype=bool).to(device)
 
-width_mask = torch.zeros((v,a,10000,4,15), dtype=bool).cuda()
+width_mask = torch.zeros((v,a,10000,4,15), dtype=bool).to(device)
 depth_mask = torch.zeros((v, a, 10000, len(depth_list)), dtype=bool).to(device)
 depth_for_score = torch.zeros((v, a, len(depth_list)), dtype=torch.float32).to(device)
 depth_for_score[:,:,0:len(depth_list)] = depth_list
@@ -103,7 +103,7 @@ def select_score(score):
     """
     tmp, is_force_closure = False, False
     quality = -1
-    fc_list = torch.Tensor([1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]).cuda()
+    fc_list = torch.Tensor([1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]).to(device)
     for ind_, value_fc in enumerate(fc_list):
         tmp = is_force_closure
         is_force_closure = score[ind_] == 1
@@ -268,9 +268,12 @@ def grasp_sample(point, point_normal, pcd, pcd_normals,
 
 def process_obj(obj_name):
     label_path = obj_name.replace(".obj", ".npz")
+    if os.path.exists(label_path):
+        print('Skip', label_path)
+        return
 
     mesh = o3d.io.read_triangle_mesh(obj_name)
-    if 'PhoCaL' in obj_name or 'OmniObject3d' in obj_name:
+    if 'PhoCaL' in obj_name or 'OmniObject3d' in obj_name or 'GoogleScan' in obj_name:
         mesh.vertices = o3d.utility.Vector3dVector(np.array(mesh.vertices)/1000.) 
 
     mesh_size = min(get_boundbox_size(mesh))
@@ -281,20 +284,20 @@ def process_obj(obj_name):
 
     normal_radius = mesh_size / 8
     obj_pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=30))
-    pcd_normals = torch.Tensor(obj_pcd.normals).cuda()    
+    pcd_normals = torch.Tensor(obj_pcd.normals).to(device)    
     obj_sampled = obj_pcd.voxel_down_sample(sample_voxel_size)
     obj_sampled.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=normal_radius, max_nn=30))
-    sampled_normals = torch.Tensor(obj_sampled.normals).cuda()
+    sampled_normals = torch.Tensor(obj_sampled.normals).to(device)
 
     views = generate_views(300)
     views_matrix = get_points_view()
 
-    views = torch.Tensor(views).cuda()
-    views_matrix = torch.Tensor(views_matrix).cuda()
+    views = torch.Tensor(views).to(device)
+    views_matrix = torch.Tensor(views_matrix).to(device)
 
-    sampled_points = torch.Tensor(obj_sampled.points).cuda()
+    sampled_points = torch.Tensor(obj_sampled.points).to(device)
     sampled_ind = range(len(sampled_points))
-    pcd_points = torch.Tensor(obj_pcd.points).cuda()
+    pcd_points = torch.Tensor(obj_pcd.points).to(device)
     
 
 
@@ -325,6 +328,9 @@ def process_obj(obj_name):
 
 
 import argparse
+parser = argparse.ArgumentParser(description="将文件列表分成8份")
+parser.add_argument("part_id", type=int, choices=range(0, 8), help="选择要获取的部分(0-7)")
+args = parser.parse_args()
 
 def split_list_into_parts(lst, n):
     """将列表分为n个部分"""
@@ -336,13 +342,8 @@ if __name__  == "__main__":
     root = '/data/panmingjie/OmniObjectPose/data'
     with open("./filtered_obj_list.txt", 'r') as f:
         obj_list = f.read().splitlines()
-        obj_list = [os.path.join(root, x.replace('Simp', 'Aligned')) for x in obj_list]
-        obj_list = obj_list
+        obj_list = [os.path.join(root, x.replace(os.path.basename(x), 'Aligned.obj')) for x in obj_list]
 
-    # 处理一部分文件
-    parser = argparse.ArgumentParser(description="将文件列表分成8份")
-    parser.add_argument("part_id", type=int, choices=range(0, 8), help="选择要获取的部分(0-7)")
-    args = parser.parse_args()
     parts = list(split_list_into_parts(obj_list, 8))
     selected_objs = parts[args.part_id]  
 
